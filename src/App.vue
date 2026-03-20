@@ -2,6 +2,25 @@
   <div class="app">
     <div id="map" class="map"></div>
 
+    <div class="upload-panel">
+      <div class="upload-title">Excel 导入（支持多 Sheet）</div>
+      <div class="upload-row">
+        <input
+          type="file"
+          accept=".xlsx,.xls"
+          class="file-input"
+          :disabled="loadingData || excelLoading"
+          @change="onExcelFileChange"
+        />
+        <button class="btn secondary small-btn" @click="resetToSeedData" :disabled="loadingData || excelLoading">
+          恢复示例数据
+        </button>
+      </div>
+      <div v-if="excelLoading" class="upload-hint">解析中...</div>
+      <div v-if="excelMsg" class="upload-ok">{{ excelMsg }}</div>
+      <div v-if="excelError || apiError" class="upload-error">{{ excelError || apiError }}</div>
+    </div>
+
     <div v-if="selectedCustomer" class="panel">
       <h2>{{ selectedCustomer.name }} - 智能报价/调货</h2>
 
@@ -195,6 +214,8 @@
 <script>
 import * as echarts from 'echarts'
 import { suppliers as seedSuppliers, customers as seedCustomers } from './data.js'
+import { fetchCustomers, fetchSuppliers, createDispatchOrder } from './api.js'
+import { parseExcelFile } from './excelParser.js'
 
 function isValidNumber(val) {
   return typeof val === 'number' && !isNaN(val) && isFinite(val)
@@ -220,6 +241,13 @@ export default {
       radiusCircle: null,
 
       suppliersState: initialSuppliers,
+      customersState: seedCustomers,
+      loadingData: true,
+      apiError: '',
+      dispatchPosting: false,
+      excelLoading: false,
+      excelMsg: '',
+      excelError: '',
 
       quoteForm: {
         quantity: 10,
@@ -263,10 +291,9 @@ export default {
 
   async mounted() {
     await this.waitForAMapReady()
+    await this.loadBackendData()
     this.$nextTick(() => {
-      setTimeout(() => {
-        this.initMap()
-      }, 100)
+      setTimeout(() => this.initMap(), 100)
     })
 
     // ECharts tooltip/axisPointer 弹层：用户点击图表以外则关闭
@@ -316,6 +343,152 @@ export default {
   },
 
   methods: {
+    resetToSeedData() {
+      const hadMap = !!this.map
+      this.suppliersState = seedSuppliers.map(s => ({
+        ...s,
+        lat: Number(s.lat),
+        lng: Number(s.lng),
+        price: Number(s.price) || 0,
+        capacityRemaining: typeof s.capacity === 'number' ? Number(s.capacity) : 0
+      }))
+      this.customersState = seedCustomers.map(c => ({
+        ...c,
+        lat: Number(c.lat),
+        lng: Number(c.lng),
+        radius: Number(c.radius) || 0
+      }))
+
+      this.resetQuoteAndState()
+
+      if (hadMap) {
+        try {
+          this.map.destroy()
+        } catch (e) {}
+        this.map = null
+      }
+      if (hadMap) this.$nextTick(() => this.initMap())
+    },
+
+    resetQuoteAndState() {
+      this.selectedCustomer = null
+      this.activeSupplier = null
+      if (this.radiusCircle && this.map) {
+        try {
+          this.map.remove(this.radiusCircle)
+        } catch (e) {}
+      }
+      this.radiusCircle = null
+      this.quoteResults = []
+      this.recommendation = null
+      this.dispatchPlan = {
+        allocations: [],
+        allocationBySupplierId: new Set(),
+        totalQuantity: 0,
+        totalCost: 0,
+        remainingShortage: 0
+      }
+      this.dispatchOrders = []
+      if (this.chartInstance) {
+        try {
+          this.chartInstance.dispose()
+        } catch (e) {}
+        this.chartInstance = null
+      }
+    },
+
+    async onExcelFileChange(e) {
+      const file = e && e.target && e.target.files ? e.target.files[0] : null
+      if (!file) return
+
+      this.excelLoading = true
+      this.excelMsg = ''
+      this.excelError = ''
+      try {
+        const parsed = await parseExcelFile(file)
+        const suppliers = Array.isArray(parsed.suppliers) ? parsed.suppliers : []
+        const customers = Array.isArray(parsed.customers) ? parsed.customers : []
+
+        this.suppliersState = suppliers.map(s => ({
+          ...s,
+          lat: Number(s.lat),
+          lng: Number(s.lng),
+          price: Number(s.price) || 0,
+          capacity: Number(s.capacity) || Number(s.capacityRemaining) || 0,
+          capacityRemaining: Number(s.capacityRemaining) || Number(s.capacity) || 0,
+          history: Array.isArray(s.history) ? s.history : [],
+          phone: s.phone ? String(s.phone) : ''
+        }))
+        this.customersState = customers.map(c => ({
+          ...c,
+          lat: Number(c.lat),
+          lng: Number(c.lng),
+          radius: Number(c.radius) || 0
+        }))
+
+        if (this.suppliersState.length === 0 || this.customersState.length === 0) {
+          throw new Error('Excel 解析成功，但 suppliers/customers 为空，请检查表头与列名')
+        }
+
+        this.excelMsg = `导入成功：${this.suppliersState.length} 个供应商，${this.customersState.length} 个客户`
+
+        this.resetQuoteAndState()
+
+        // 重新绘制地图点位
+        if (this.map) {
+          try {
+            this.map.destroy()
+          } catch (e2) {}
+          this.map = null
+        }
+        this.$nextTick(() => this.initMap())
+      } catch (err) {
+        this.excelError = err && err.message ? String(err.message) : 'Excel 导入失败'
+      } finally {
+        this.excelLoading = false
+        // 清空输入，避免重复触发同一文件时不更新
+        if (e && e.target) e.target.value = ''
+      }
+    },
+
+    async loadBackendData() {
+      this.loadingData = true
+      this.apiError = ''
+      try {
+        const [customers, suppliers] = await Promise.all([fetchCustomers(), fetchSuppliers()])
+
+        const nextCustomers = Array.isArray(customers) ? customers : []
+        const nextSuppliers = Array.isArray(suppliers) ? suppliers : []
+
+        // 后端约定：customers/suppliers 都要至少包含 id/name/lat/lng
+        // radius/price/capacity/phone/history 若缺失则给默认值，保证前端仍可运行
+        this.customersState = nextCustomers.map(c => ({
+          ...c,
+          lat: Number(c.lat),
+          lng: Number(c.lng),
+          radius: Number(c.radius) || 0
+        }))
+
+        this.suppliersState = nextSuppliers.map(s => ({
+          ...s,
+          lat: Number(s.lat),
+          lng: Number(s.lng),
+          price: Number(s.price) || 0,
+          capacityRemaining:
+            typeof s.capacityRemaining === 'number'
+              ? Number(s.capacityRemaining)
+              : (Number(s.capacity) || 0)
+        }))
+      } catch (e) {
+        // 后端未部署/接口不通：回退到本地 data.js，方便你继续调试前端
+        this.apiError = e?.message ? String(e.message) : 'loadBackendData failed'
+        this.resetToSeedData()
+        // console.warn('后端加载失败，已回退到 data.js', e)
+      } finally {
+        this.loadingData = false
+      }
+    },
+
     resetQuote() {
       this.quoteForm.quantity = 10
       this.quoteForm.distanceMode = 'direct'
@@ -354,6 +527,14 @@ export default {
     },
 
     initMap() {
+      if (this.map) {
+        try {
+          this.map.destroy()
+        } catch (e) {}
+        this.map = null
+      }
+      this.supplierMarkers = {}
+
       this.map = new AMap.Map('map', {
         zoom: 5,
         center: [114, 36],
@@ -379,7 +560,7 @@ export default {
       })
 
       // 添加客户（蓝色）
-      seedCustomers.forEach(c => {
+      this.customersState.forEach(c => {
         if (!isValidNumber(c.lat) || !isValidNumber(c.lng)) return
         const marker = new AMap.Marker({
           position: [c.lng, c.lat],
@@ -665,7 +846,14 @@ export default {
       this.chartInstance.setOption(option, true)
 
       if (!this.resizeHandler) {
-        this.resizeHandler = () => this.chartInstance && this.chartInstance.resize()
+        this.resizeHandler = () => {
+          try {
+            this.chartInstance && this.chartInstance.resize()
+          } catch (e) {}
+          try {
+            this.map && this.map.resize && this.map.resize()
+          } catch (e2) {}
+        }
         window.addEventListener('resize', this.resizeHandler)
       }
     },
@@ -682,29 +870,78 @@ export default {
     },
 
     confirmDispatch() {
+      // 仍保留前端算法：把 allocations 发给后端落库，然后在成功后同步扣减
       if (!this.selectedCustomer) return
       if (!this.dispatchPlan || this.dispatchPlan.remainingShortage > 0) return
 
-      // 扣减产能（模拟“调货”）
-      for (const a of this.dispatchPlan.allocations) {
-        const s = this.suppliersState.find(x => x.id === a.supplierId)
-        if (!s) continue
-        s.capacityRemaining = Math.max(0, Number(s.capacityRemaining) - a.amount)
+      const payload = {
+        customerId: this.selectedCustomer.id,
+        quantity: Number(this.quoteForm.quantity) || 0,
+        allocations: this.dispatchPlan.allocations.map(a => ({
+          supplierId: a.supplierId,
+          amount: a.amount
+        })),
+        totalCost: this.dispatchPlan.totalCost,
+        quoteForm: { ...this.quoteForm }
       }
 
-      this.dispatchOrders.unshift({
-        id: Date.now(),
-        customer: this.selectedCustomer,
-        quantity: Number(this.quoteForm.quantity) || 0,
-        allocations: this.dispatchPlan.allocations.map(a => ({ ...a })),
-        totalCost: this.dispatchPlan.totalCost,
-        createdAt: new Date().toISOString()
-      })
+      this.dispatchPosting = true
+      Promise.resolve()
+        .then(() => createDispatchOrder(payload))
+        .then((resp) => {
+          // 后端返回结构可选：
+          // { orderId, suppliers: [{id, capacityRemaining}] } 或 { capacityUpdates: [...] }
+          if (resp && Array.isArray(resp.suppliers)) {
+            resp.suppliers.forEach(u => {
+              const s = this.suppliersState.find(x => x.id === u.id)
+              if (!s) return
+              if (typeof u.capacityRemaining === 'number') s.capacityRemaining = u.capacityRemaining
+            })
+          } else {
+            // 回退：前端本地扣减（至少保证你看到结果）
+            for (const a of this.dispatchPlan.allocations) {
+              const s = this.suppliersState.find(x => x.id === a.supplierId)
+              if (!s) continue
+              s.capacityRemaining = Math.max(0, Number(s.capacityRemaining) - a.amount)
+            }
+          }
 
-      this.updateSupplierMarkersLabel()
+          this.dispatchOrders.unshift({
+            id: resp?.orderId ?? Date.now(),
+            customer: this.selectedCustomer,
+            quantity: Number(this.quoteForm.quantity) || 0,
+            allocations: this.dispatchPlan.allocations.map(a => ({ ...a })),
+            totalCost: this.dispatchPlan.totalCost,
+            createdAt: new Date().toISOString()
+          })
 
-      // 调货后重新计算（容量会影响可分配供应商）
-      this.calculateQuote()
+          this.updateSupplierMarkersLabel()
+          this.calculateQuote()
+        })
+        .catch((e) => {
+          // 后端失败时：仍进行前端本地扣减，保证交互可用
+          // console.error('提交调货失败', e)
+          for (const a of this.dispatchPlan.allocations) {
+            const s = this.suppliersState.find(x => x.id === a.supplierId)
+            if (!s) continue
+            s.capacityRemaining = Math.max(0, Number(s.capacityRemaining) - a.amount)
+          }
+
+          this.dispatchOrders.unshift({
+            id: Date.now(),
+            customer: this.selectedCustomer,
+            quantity: Number(this.quoteForm.quantity) || 0,
+            allocations: this.dispatchPlan.allocations.map(a => ({ ...a })),
+            totalCost: this.dispatchPlan.totalCost,
+            createdAt: new Date().toISOString()
+          })
+
+          this.updateSupplierMarkersLabel()
+          this.calculateQuote()
+        })
+        .finally(() => {
+          this.dispatchPosting = false
+        })
     }
   },
 
@@ -724,45 +961,98 @@ export default {
 
 <style scoped>
 .app {
-  width: 100vw;
-  height: 100vh;
-  display: flex;
+  width: 100%;
+  height: 100dvh;
+  min-height: 100svh;
+  display: block;
   position: relative;
   overflow: hidden;
 }
 
 /* 地图区域 */
 .map {
-  flex: 1;
-  height: 100%;
   background: #f0f0f0;
   /* 确保地图不会溢出 */
-  position: relative;
+  position: absolute;
+  inset: 0;
   z-index: 1; /* 显式降低层级 */
+}
+
+.upload-panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2000;
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #eee;
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.upload-title {
+  font-size: 14px;
+  font-weight: 900;
+  color: #111;
+  margin-bottom: 8px;
+}
+
+.upload-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.file-input {
+  flex: 1;
+  font-size: 13px;
+}
+
+.upload-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #666;
+}
+
+.upload-ok {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #2f9e44;
+  font-weight: 800;
+}
+
+.upload-error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #c92a2a;
+  font-weight: 800;
 }
 
 /* 右侧面板 —— 关键修复 */
 .panel {
   position: absolute; /* 脱离文档流，避免被挤压 */
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 30%;
-  height: 70%;
-  max-width: 500px;
+  top: 16px;
+  left: 16px;
+  bottom: 16px;
+  width: min(500px, 34vw);
+  height: auto;
+  max-height: calc(100vh - 32px);
   min-width: 200px;
-  padding: 20px;
+  padding: 18px;
   background: white;
   box-shadow: -2px 0 10px rgba(0, 0, 0, 0.15);
   overflow-y: auto;
   border-left: 1px solid #ddd;
   z-index: 1000; /* ⭐⭐⭐ 关键：高于地图 */
+  border-radius: 12px;
 }
 
 .chart {
   width: 100%;
-  height: 300px;
-  margin: 20px 0;
+  height: 270px;
+  margin: 16px 0;
 }
 
 .chart-wrap {
@@ -1128,10 +1418,41 @@ export default {
     bottom: 0;
     right: 0;
     left: 0;
-    height: 60vh; /* 占屏幕60%高度 */
+    height: 65vh; /* 占屏幕高度 */
     border-left: none;
     border-top: 1px solid #ddd;
     z-index: 1000;
+    border-radius: 12px 12px 0 0;
+    padding: 16px;
+  }
+
+  .upload-panel {
+    top: 8px;
+    left: 8px;
+    width: calc(100vw - 16px);
+    max-width: none;
+  }
+
+  .form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .label {
+    min-width: auto;
+  }
+
+  .supplier-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .supplier-right {
+    align-items: flex-start;
+  }
+
+  .chart {
+    height: 240px;
   }
 }
 
@@ -1142,6 +1463,10 @@ export default {
   }
   .chart {
     height: 220px;
+  }
+
+  .upload-panel {
+    padding: 10px 10px;
   }
 }
 </style>
