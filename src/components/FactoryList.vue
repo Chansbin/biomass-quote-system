@@ -12,23 +12,27 @@
     </div>
 
     <div v-else class="list">
-      <button
+      <div
         v-for="it in items"
         :key="it.id"
         class="row"
         :class="{ active: activeId === it.id }"
-        @click="$emit('select', it.id)"
       >
-        <div class="row-top">
-          <div class="name">{{ it.name }}</div>
-          <div class="cost">¥{{ it.unitCost.toFixed(2) }}/吨</div>
+        <div class="row-main" @click="$emit('select', it.id)">
+          <div class="row-top">
+            <div class="name">{{ it.name }}</div>
+            <div class="cost">¥{{ it.unitCost.toFixed(2) }}/吨</div>
+          </div>
+          <div class="meta">
+            <span>基地价 ¥{{ it.price.toFixed(0) }}</span>
+            <span>运距 {{ it.distanceKm.toFixed(1) }} km</span>
+            <span>运费/吨 ¥{{ it.freightCostPerTon.toFixed(2) }}</span>
+          </div>
         </div>
-        <div class="meta">
-          <span>基地价 ¥{{ it.price.toFixed(0) }}</span>
-          <span>运距 {{ it.distanceKm.toFixed(1) }} km</span>
-          <span>运费/吨 ¥{{ it.freightCostPerTon.toFixed(2) }}</span>
-        </div>
-      </button>
+        <button class="detail-btn" @click="$emit('show-detail', it.id)" title="查看详情">
+          详情
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -41,7 +45,7 @@ defineProps({
   activeId: { type: [String, Number], default: null }
 })
 
-defineEmits(['select'])
+defineEmits(['select', 'show-detail'])
 </script>
 
 <style scoped>
@@ -123,6 +127,9 @@ defineEmits(['select'])
   padding: 10px 10px;
   cursor: pointer;
   margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .row:last-child {
   margin-bottom: 0;
@@ -133,6 +140,27 @@ defineEmits(['select'])
 .row.active {
   border-color: rgba(22, 163, 74, 0.55);
   box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.10);
+}
+
+.row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.detail-btn {
+  padding: 6px 12px;
+  background: rgba(14, 165, 233, 0.1);
+  color: rgba(14, 165, 233, 0.9);
+  border: 1px solid rgba(14, 165, 233, 0.3);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.detail-btn:hover {
+  background: rgba(14, 165, 233, 0.2);
 }
 
 .row-top {

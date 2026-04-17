@@ -1,0 +1,20 @@
+# 云端部署配置
+# 使用 Node.js 运行时
+
+node_version: 18
+
+build:
+  commands:
+    - cd server && npm install
+    - npm install
+
+start:
+  command: node server/index.js
+
+env:
+  NODE_ENV: production
+  PORT: 3001
+
+volumes:
+  - name: data-storage
+    mount: /app/data

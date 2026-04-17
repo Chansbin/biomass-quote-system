@@ -20,7 +20,6 @@ async function postJson(url, body) {
     body: JSON.stringify(body)
   })
   if (!res.ok) throw new Error(`POST ${url} failed: ${res.status}`)
-  // 有的后端可能不返回 body
   try {
     return await res.json()
   } catch (e) {
@@ -28,9 +27,15 @@ async function postJson(url, body) {
   }
 }
 
-// 后端约定返回：
-// customers: [{id,name,lat,lng,radius}]
-// suppliers: [{id,name,lat,lng,price,capacity 或 capacityRemaining, phone?, history?}]
+async function uploadFile(url, file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const res = await fetch(url, { method: 'POST', body: formData })
+  if (!res.ok) throw new Error(`POST ${url} failed: ${res.status}`)
+  return res.json()
+}
+
+// 后端约定返回：customers: [{id,name,lat,lng,radius}], suppliers: [{id,name,lat,lng,price,capacity}]
 export async function fetchCustomers() {
   return getJson(buildUrl('/api/customers'))
 }
@@ -39,9 +44,18 @@ export async function fetchSuppliers() {
   return getJson(buildUrl('/api/suppliers'))
 }
 
-// 前端计算出的调货结果发给后端落库/扣减
-// payload: { customerId, quantity, allocations:[{supplierId,amount}], totalCost, quoteForm? }
+// Excel 上传
+export async function uploadExcel(file) {
+  return uploadFile(buildUrl('/api/excel/upload'), file)
+}
+
+// 创建调货订单
 export async function createDispatchOrder(payload) {
   return postJson(buildUrl('/api/dispatch-orders'), payload)
+}
+
+// 获取订单列表
+export async function fetchDispatchOrders() {
+  return getJson(buildUrl('/api/dispatch-orders'))
 }
 

@@ -30,10 +30,11 @@
           :items="quoteItems"
           :active-id="activeSupplierId"
           @select="handleSelectSupplier"
+          @show-detail="showSupplierDetail"
         />
 
         <details class="tools" :open="false">
-          <summary class="tools-summary">数据工具（Excel 导入 / 示例数据）</summary>
+          <summary class="tools-summary">数据工具（Excel 导入 / 导出 / 示例数据）</summary>
           <div class="tools-body">
             <div class="tools-row">
               <input
@@ -43,6 +44,11 @@
                 :disabled="loadingData || excelLoading"
                 @change="onExcelFileChange"
               />
+            </div>
+            <div class="tools-row">
+              <button class="tool-btn" @click="exportToExcel" :disabled="loadingData || excelLoading">
+                导出当前数据
+              </button>
               <button class="tool-btn" @click="resetToSeedData" :disabled="loadingData || excelLoading">
                 恢复示例数据
               </button>
@@ -54,6 +60,15 @@
         </details>
       </aside>
     </main>
+
+    <!-- 供应商详情弹窗 -->
+    <SupplierDetail
+      v-if="detailVisible"
+      :visible="detailVisible"
+      :supplier="selectedSupplier"
+      @close="detailVisible = false"
+      @select="handleSelectSupplier"
+    />
   </div>
 </template>
 
@@ -62,10 +77,12 @@ import { computed, onMounted, ref } from 'vue'
 import QuoteHeader from './components/QuoteHeader.vue'
 import QuoteMap from './components/QuoteMap.vue'
 import FactoryList from './components/FactoryList.vue'
+import SupplierDetail from './components/SupplierDetail.vue'
 
 import { suppliers as seedSuppliers, customers as seedCustomers } from './data.js'
-import { fetchCustomers, fetchSuppliers } from './api.js'
+import { fetchCustomers, fetchSuppliers, uploadExcel } from './api.js'
 import { parseExcelFile } from './excelParser.js'
+import * as XLSX from 'xlsx'
 
 function isValidNumber(val) {
   return typeof val === 'number' && !isNaN(val) && isFinite(val)
@@ -110,6 +127,75 @@ const activeSupplierId = ref(null)
 const quoteItems = ref([]) // [{id,name,price,distanceKm,freightCostPerTon,unitCost,lng,lat}]
 
 const mapCmp = ref(null)
+
+const detailVisible = ref(false)
+const selectedSupplier = ref({})
+
+// 导出 Excel
+function exportToExcel() {
+  try {
+    const workbook = XLSX.utils.book_new()
+
+    // 供应商数据
+    const suppliersData = suppliersState.value.map(s => ({
+      id: s.id,
+      name: s.name,
+      lat: s.lat,
+      lng: s.lng,
+      price: s.price,
+      capacity: s.capacityRemaining,
+      phone: s.phone
+    }))
+    const suppliersWorksheet = XLSX.utils.json_to_sheet(suppliersData)
+    XLSX.utils.book_append_sheet(workbook, suppliersWorksheet, '供应商')
+
+    // 客户数据
+    const customersData = customersState.value.map(c => ({
+      id: c.id,
+      name: c.name,
+      lat: c.lat,
+      lng: c.lng,
+      radius: c.radius
+    }))
+    const customersWorksheet = XLSX.utils.json_to_sheet(customersData)
+    XLSX.utils.book_append_sheet(workbook, customersWorksheet, '客户')
+
+    // 历史记录
+    const historyData = []
+    for (const s of suppliersState.value) {
+      if (s.history && Array.isArray(s.history)) {
+        for (const h of s.history) {
+          historyData.push({
+            supplier_id: s.id,
+            year: h.year,
+            month: h.month,
+            volume: h.volume,
+            note: h.note
+          })
+        }
+      }
+    }
+    if (historyData.length > 0) {
+      const historyWorksheet = XLSX.utils.json_to_sheet(historyData)
+      XLSX.utils.book_append_sheet(workbook, historyWorksheet, '合作记录')
+    }
+
+    XLSX.writeFile(workbook, `biomass-data-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    excelMsg.value = '导出成功！'
+    setTimeout(() => excelMsg.value = '', 3000)
+  } catch (e) {
+    excelError.value = '导出失败：' + (e.message || '未知错误')
+  }
+}
+
+// 显示供应商详情
+function showSupplierDetail(id) {
+  const supplier = suppliersState.value.find(s => s.id === id)
+  if (supplier) {
+    selectedSupplier.value = supplier
+    detailVisible.value = true
+  }
+}
 
 const candidateSuppliersForMap = computed(() =>
   quoteItems.value.map(it => ({
