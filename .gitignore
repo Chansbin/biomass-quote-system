@@ -28,3 +28,7 @@ uploads/*
 !uploads/.gitkeep
 data/*
 !data/.gitkeep
+
+# Vercel/Railway config (not needed)
+vercel.json
+Dockerfile

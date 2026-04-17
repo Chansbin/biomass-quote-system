@@ -1,20 +1,12 @@
-# 云端部署配置
-# 使用 Node.js 运行时
-
-node_version = 18
+# Railway 部署配置
+# 参考：https://docs.railway.app/
 
 [build]
-commands = [
-    "cd server && npm install",
-    "npm install"
-]
+commands = ["npm ci", "cd server && npm ci"]
 
 [start]
 command = "node server/index.js"
 
 [env]
 NODE_ENV = "production"
-PORT = 3001
-
-[volumes.data-storage]
-mount = "/app/data"
+PORT = "3001"
