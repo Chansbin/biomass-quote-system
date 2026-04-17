@@ -1,7 +1,7 @@
 # 云端部署配置
 # 使用 Node.js 运行时
 
-node_version = 18
+node_version = 22
 
 [build]
 commands = [
