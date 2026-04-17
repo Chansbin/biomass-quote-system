@@ -2,7 +2,7 @@
 # 参考：https://docs.railway.app/
 
 [build]
-commands = ["npm ci", "cd server && npm ci"]
+commands = ["npm install", "cd server && npm install"]
 
 [start]
 command = "node server/index.js"
